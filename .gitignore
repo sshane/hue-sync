@@ -1,0 +1,15 @@
+hue_creds.json
+data/auth.json
+data/*.json
+
+# Local/IDE/cache
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+
+# OS junk
+.DS_Store
