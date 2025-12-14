@@ -97,6 +97,12 @@ class ShowOptions:
     HIGH_GAIN = 2.0              # extra gain for high-band group intensity (5k–15k is often subtle)
     COLOR_VIBRANCE = 1.35        # multiplies saturation globally (>=1 = less pastel)
 
+    # High-band (hats/clicks) response shaping:
+    # The high band is naturally spiky; we slow its visual envelope so it doesn't slam to max instantly.
+    HIGH_ATTACK_RATE = 4.0       # units/sec slew limit on rising edge (lower = slower ramp up)
+    HIGH_RELEASE_RATE = 1.2      # units/sec decay rate for the high envelope (lower = longer tail)
+    HIGH_LP_RC = 0.07            # seconds RC for high-band low-pass filter (higher = smoother/slower)
+
     # Beat animation (iLightShow-ish):
     # Instead of "whatever the analyzer pulse happens to be this frame", trigger a short brightness
     # animation on each beat and scale its duration with BPM. This makes beats feel intentional
@@ -1088,6 +1094,11 @@ class EpicShow:
         self._last_beat_trigger_t = 0.0
         self._tempo_period_s = 0.50  # updated from bpm_est when confident
 
+        # High-band envelope shaping (separate from main brightness so hats/clicks feel smoother)
+        self._high_attack_rate = float(getattr(ShowOptions, "HIGH_ATTACK_RATE", 4.0))
+        self._high_release_rate = float(getattr(ShowOptions, "HIGH_RELEASE_RATE", 1.2))
+        self._high_lp_rc = float(getattr(ShowOptions, "HIGH_LP_RC", 0.07))
+
         # Asymmetric envelope on kick strength (attack fast, release slower)
         self._kick_release_rate = 2.0  # units/sec (more momentum; less snappy)
         self._kick_gain = 2.0  # multiply kick signal before filtering (helps small flashes)
@@ -1363,13 +1374,15 @@ class EpicShow:
         # - output: low-pass filtered (same RC as main intensity)
         high_raw = float(getattr(f, "high_strength", 0.0)) if ShowOptions.ENABLE_HIGH else 0.0
 
+        # High band is very spiky; apply a slew-limited attack + slower release to avoid "instant max".
         if high_raw >= self._high_pulse:
-            self._high_pulse = high_raw
+            rise = float(dt) * float(self._high_attack_rate)
+            self._high_pulse = min(float(high_raw), float(self._high_pulse) + rise)
         else:
-            self._high_pulse = max(0.0, self._high_pulse - float(dt) * float(self._kick_release_rate))
+            self._high_pulse = max(0.0, float(self._high_pulse) - float(dt) * float(self._high_release_rate))
 
         self._high_filt.dt = float(dt)
-        self._high_filt.update_alpha(max(1e-4, float(self._v_lp_rc)))
+        self._high_filt.update_alpha(max(1e-4, float(self._high_lp_rc)))
         high_lp = float(self._high_filt.update(self._high_pulse))
 
         for ch in self.channel_ids:
@@ -1632,6 +1645,9 @@ class PreviewWindow:
         self._lock = threading.Lock()
         self._frame_rgb8: Dict[int, Tuple[int, int, int]] = {ch: (0, 0, 0) for ch in self.channel_ids}
         self._frame_v: Dict[int, float] = {ch: 0.0 for ch in self.channel_ids}
+        # Per-channel role labels (for debugging group selection)
+        # "" = none, "K" = kick group, "H" = high group, "K+H" = both (should be rare).
+        self._role_by_ch: Dict[int, str] = {ch: "" for ch in self.channel_ids}
         self._spec_freqs: Optional[np.ndarray] = None
         self._spec_mag: Optional[np.ndarray] = None
         self._kick_lo = 40.0
@@ -1691,6 +1707,23 @@ class PreviewWindow:
                 r8, g8, b8 = (int(r16) >> 8, int(g16) >> 8, int(b16) >> 8)
                 self._frame_rgb8[ch] = (r8, g8, b8)
                 self._frame_v[ch] = float(max(r8, g8, b8) / 255.0)
+
+    def update_roles(self, kick_group: set[int], high_group: set[int]) -> None:
+        """
+        Provide the current per-channel group membership (from the show engine).
+        """
+        with self._lock:
+            for ch in self.channel_ids:
+                in_k = ch in kick_group
+                in_h = ch in high_group
+                if in_k and in_h:
+                    self._role_by_ch[ch] = "K+H"
+                elif in_k:
+                    self._role_by_ch[ch] = "K"
+                elif in_h:
+                    self._role_by_ch[ch] = "H"
+                else:
+                    self._role_by_ch[ch] = ""
 
     def update_spectrum(
         self,
@@ -1769,7 +1802,12 @@ class PreviewWindow:
             screen.fill((10, 10, 12))
             with self._lock:
                 items = [
-                    (ch, self._frame_rgb8.get(ch, (0, 0, 0)), float(self._frame_v.get(ch, 0.0)))
+                    (
+                        ch,
+                        self._frame_rgb8.get(ch, (0, 0, 0)),
+                        float(self._frame_v.get(ch, 0.0)),
+                        str(self._role_by_ch.get(ch, "")),
+                    )
                     for ch in self.channel_ids
                 ]
                 freqs = None if self._spec_freqs is None else self._spec_freqs.copy()
@@ -1804,7 +1842,7 @@ class PreviewWindow:
                 cx, cy = self.w // 2, tile_area_h // 2
                 radius = int(min(self.w, self.h) * 0.35)
                 box = max(16, int(self.scale * 0.55))
-                for i, (ch, rgb, v) in enumerate(items):
+                for i, (ch, rgb, v, role) in enumerate(items):
                     ang = (2.0 * math.pi * i) / max(1, self.n)
                     x = int(cx + radius * math.cos(ang) - box / 2)
                     y = int(cy + radius * math.sin(ang) - box / 2)
@@ -1812,7 +1850,8 @@ class PreviewWindow:
                     pygame.draw.rect(screen, (30, 30, 34), pygame.Rect(x, y, box, box), 2)
                     if font:
                         fg = (10, 10, 10) if v > 0.65 else (240, 240, 240)
-                        line1 = font.render(f"{ch}", True, fg)
+                        tag = f"[{role}]" if role else ""
+                        line1 = font.render(f"{ch} {tag}".strip(), True, fg)
                         line2 = font.render(f"v={v:.2f}", True, fg)
                         line3 = font.render(f"{rgb[0]},{rgb[1]},{rgb[2]}", True, fg)
                         screen.blit(line1, (x + 4, y + 2))
@@ -1820,7 +1859,7 @@ class PreviewWindow:
                         screen.blit(line3, (x + 4, y + 34))
             else:
                 pad = 6
-                for idx, (ch, rgb, v) in enumerate(items):
+                for idx, (ch, rgb, v, role) in enumerate(items):
                     r = idx // max(1, self.cols)
                     c = idx % max(1, self.cols)
                     x0 = tile_x_off + c * self.scale + pad
@@ -1831,7 +1870,8 @@ class PreviewWindow:
                     pygame.draw.rect(screen, (30, 30, 34), pygame.Rect(x0, y0, w, h), 2)
                     if font:
                         fg = (10, 10, 10) if v > 0.65 else (240, 240, 240)
-                        line1 = font.render(f"{ch}", True, fg)
+                        tag = f"[{role}]" if role else ""
+                        line1 = font.render(f"{ch} {tag}".strip(), True, fg)
                         line2 = font.render(f"v={v:.2f}", True, fg)
                         line3 = font.render(f"{rgb[0]},{rgb[1]},{rgb[2]}", True, fg)
                         screen.blit(line1, (x0 + 4, y0 + 2))
@@ -2866,6 +2906,13 @@ class Runner:
                 self.streamer.send_frame(rgb)
                 if self._preview:
                     self._preview.update_from_rgb16(rgb)
+                    # Also show current group membership (kick/high) per channel in the preview labels.
+                    try:
+                        kick_sel = set(getattr(self.show, "_kick_sel", set()) or set())
+                        high_sel = set(getattr(self.show, "_high_sel", set()) or set())
+                        self._preview.update_roles(kick_sel, high_sel)
+                    except Exception:
+                        pass
             except Exception:
                 # If DTLS hiccups, don't hard-crash the show loop; you can restart.
                 pass
@@ -3073,48 +3120,6 @@ def main() -> None:
 
     # --auth: register with the bridge and store creds, then exit
     if args.auth:
-        # If pykit is available, prefer its bridge repository flow (it also persists ./data/auth.json).
-        # This matches the environment where DTLS handshake was proven to work.
-        if args.dtls_backend == "pykit":
-            import hue_entertainment_pykit  # noqa: F401
-            from bridge.bridge_repository import BridgeRepository
-
-            os.makedirs("data", exist_ok=True)
-            repo = BridgeRepository()
-
-            print(f"Auth mode (pykit): press the Hue Bridge link button if needed (waiting up to {args.auth_timeout:.0f}s)…")
-            # BridgeRepository handles reusing saved ./data/auth.json automatically.
-            t0 = time.time()
-            last = None
-            while (time.time() - t0) < float(args.auth_timeout):
-                try:
-                    bd = repo.fetch_bridge_data(args.bridge_ip)
-                    username = bd.get("username")
-                    hue_app_id = bd.get("hue-application-id")
-                    clientkey_raw = bd.get("clientkey")
-                    if not (username and hue_app_id and clientkey_raw):
-                        raise RuntimeError(f"Incomplete bridge data: {bd!r}")
-                    ck_hex, ck_b64 = _clientkey_to_hex_and_b64(str(clientkey_raw))
-                    creds = {
-                        "bridge_ip": args.bridge_ip,
-                        # Use the pykit username for CLIP v2 calls too (pykit does).
-                        "clip_app_key": username,
-                        "app_key": username,
-                        "username": username,
-                        "hue_application_id": hue_app_id,
-                        "psk_identity": hue_app_id,
-                        "clientkey_hex": ck_hex,
-                        "clientkey_b64": ck_b64,
-                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    }
-                    save_creds(args.creds_file, creds)
-                    print(f"Saved credentials to: {args.creds_file}")
-                    return
-                except Exception as e:
-                    last = e
-                    time.sleep(1.0)
-            raise SystemExit(f"ERROR: Timed out waiting for bridge auth ({args.auth_timeout:.0f}s). Last error: {last}")
-
         # Load existing creds (if any) so we can preserve an already-working CLIP v2 key.
         existing = {}
         if args.creds_file and os.path.exists(args.creds_file):
