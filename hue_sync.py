@@ -103,30 +103,6 @@ class ShowOptions:
     HIGH_RELEASE_RATE = 1.2      # units/sec decay rate for the high envelope (lower = longer tail)
     HIGH_LP_RC = 0.07            # seconds RC for high-band low-pass filter (higher = smoother/slower)
 
-    # Extra "show" moments (iLightShow-ish)
-    # These can feel "random" if the beat tracker isn't fully locked yet, so default them OFF.
-    ENABLE_BUILDUP_EFFECTS = False
-    ENABLE_DROP_FLASH = False
-    ENABLE_WHITE_SPARKLES = False
-
-    BUILDUP_RISER_THR = 0.55       # riser threshold to start buildup mode
-    BUILDUP_HOLD_S = 1.4           # how long buildup mode persists once triggered
-    BUILDUP_SPARKLES_PER_S = 7.0   # base sparkles/sec during buildup
-    BUILDUP_SPARKLE_DECAY_S = 0.12 # sparkle decay time
-    BUILDUP_WHITE_MAX = 0.95       # max whiteness mix during buildup
-
-    DROP_RISER_PEAK_THR = 0.72     # if riser was above this, a subsequent fall can trigger a drop flash
-    DROP_RISER_FALL_THR = 0.33
-    DROP_FLASH_DECAY_S = 0.25
-    DROP_WHITE = 0.85              # whiteness mix on drop
-    DROP_PALETTE_JUMP = True       # palette jump on drop moments
-    DROP_MIN_BEAT_ACTIVE = True    # only allow drop flashes when beat is confident/active
-
-    # Motion / variety
-    ENABLE_HUE_DRIFT = True
-    DRIFT_RATE = 0.06              # hue drift cycles/sec (slow global motion)
-    BUILDUP_DRIFT_BOOST = 2.6      # drift multiplier during buildup
-
     # Beat animation (iLightShow-ish):
     # Instead of "whatever the analyzer pulse happens to be this frame", trigger a short brightness
     # animation on each beat and scale its duration with BPM. This makes beats feel intentional
@@ -149,33 +125,7 @@ class ShowOptions:
     # These are intentionally *not* CLI flags to keep tuning centralized.
     # EDM kicks often have a sub thump + punch; a slightly wider band helps on bass-heavy mixes.
     KICK_BAND = (35.0, 180.0)    # low kick / bass punch
-    # Wider high band helps EDM transients (hats/claps/snares often extend well past 8kHz).
-    HIGH_BAND = (3500.0, 12000.0) # kick click + hats / transient energy
-
-    # Beat/BPM tracking tuning
-    BEAT_CONF_MIN = 1.55          # bpm_conf needed to consider tempo "active"
-    ONSET_EVT_STD_K = 2.2         # onset event threshold = mean + K*std
-    ONSET_EVT_FLOOR = 0.010       # absolute onset threshold floor
-    ONSET_EVT_REFRACTORY_S = 0.085 # minimum time between onset events used for phase lock
-    ONSET_FLUX_GAIN = 6.0         # scales spectral-flux deviation when used as an onset source (normalization)
-
-    # Quiet-section gating (prevents noisy "beats" when audio is near-silent)
-    BEAT_MIN_RMS = 0.0012         # suppress onset events/phase-lock below this
-    BEAT_STATS_MIN_RMS = 0.0010   # don't update onset mean/var below this (prevents threshold collapse)
-
-    # Dedicated hats / very-high transients (separate from HIGH_BAND)
-    ENABLE_HATS = True
-    HAT_BAND = (8000.0, 16000.0)
-    HAT_GAIN = 2.2
-    HAT_BAND_Z = 1.4
-    HAT_STRENGTH_Z0 = 0.6
-    HAT_STRENGTH_ZRANGE = 2.2
-    HAT_ATTACK_RATE = 10.0
-    HAT_RELEASE_RATE = 3.0
-    HAT_LP_RC = 0.025
-    HAT_SEL_FRAC = 0.35
-    HAT_RESELECT_EVERY_BEATS = 8
-    HAT_WHITE_TICK = 0.12          # subtle whiteness on hats (0 disables). Keep low to avoid strobing.
+    HIGH_BAND = (4000.0, 8000.0) # kick click + hats / transient energy
 
     # Kick detector sensitivity (tuning knobs)
     KICK_MIN_RMS = 0.0008        # was 0.0020; lower helps quiet system-audio captures
@@ -187,7 +137,7 @@ class ShowOptions:
     KICK_RATIO_FLUX_Z = 0.7
     KICK_ABS_BASSRAW_Z = 1.8
     KICK_ABS_FLUX_Z = 0.4
-    KICK_BAND_Z = 1.7            # primary detector in kick band (lower = more sensitive)
+    KICK_BAND_Z = 2.0            # primary detector in kick band (used to work well for EDM)
     KICK_BAND_SUPPORT_Z = 0.2    # require a tiny bit of flux or bass_db support to avoid pure sub wobble false positives
     # Strength mapping (for visuals)
     KICK_STRENGTH_Z0 = 0.9       # z where strength starts rising (was ~1.2)
@@ -736,15 +686,8 @@ class Features:
     kick: bool
     riser: float  # 0..1
     onset: float  # onset strength proxy (for BPM tracking)
-    # `*_strength` are VISUAL strengths (may include minimum scaling so the show doesn't feel dead).
     kick_strength: float = 0.0  # 0..1 intensity from kick low-frequency band (used for flashing)
-    high_strength: float = 0.0  # 0..1 combined high band (kick click + hats)
-    hat_strength: float = 0.0   # 0..1 very-high transient strength (hats/air band)
-    # Raw strengths for BPM/beat tracking (NO minimum scaling; safe to gate by activity)
-    kick_strength_raw: float = 0.0
-    high_strength_raw: float = 0.0
-    hat_strength_raw: float = 0.0
-    activity: float = 0.0       # 0..1 loudness/activity gate (for beat/BPM + noise suppression)
+    high_strength: float = 0.0   # 0..1 combined high band (kick click + hats)
     beat: bool = False
     beat_phase: float = 0.0  # 0..1 position within beat
     beat_idx: int = 0
@@ -827,13 +770,6 @@ class FastAudioAnalyzer:
         self.high_mask = (self.freqs >= self.high_lo_hz) & (self.freqs < self.high_hi_hz)
         self.ema_high = 0.0
         self.high_var = 1e-6
-        # Very-high band (hats/air) for sparkle group
-        hlo2, hhi2 = getattr(ShowOptions, "HAT_BAND", (8000.0, 16000.0))
-        self.hat_lo_hz = float(hlo2)
-        self.hat_hi_hz = float(hhi2)
-        self.hat_mask = (self.freqs >= self.hat_lo_hz) & (self.freqs < self.hat_hi_hz)
-        self.ema_hat = 0.0
-        self.hat_var = 1e-6
         # Debug spectrum snapshot (for pygame spectrum window)
         self.last_mag_raw: Optional[np.ndarray] = None
         # Debug scalars (for pygame overlay / tuning)
@@ -860,15 +796,6 @@ class FastAudioAnalyzer:
         self.high_lo_hz = lo
         self.high_hi_hz = hi
         self.high_mask = (self.freqs >= lo) & (self.freqs < hi)
-
-    def set_hat_band(self, low_hz: float, high_hz: float) -> None:
-        lo = float(low_hz)
-        hi = float(high_hz)
-        lo = max(1000.0, min(lo, self.sr / 2 - 1.0))
-        hi = max(lo + 1.0, min(hi, self.sr / 2))
-        self.hat_lo_hz = lo
-        self.hat_hi_hz = hi
-        self.hat_mask = (self.freqs >= lo) & (self.freqs < hi)
 
         # For kick/riser
         self.bass_var = 1e-6
@@ -927,18 +854,6 @@ class FastAudioAnalyzer:
         else:
             high_raw = 0.0
 
-        # Hat band (very-high transients): use mean of top ~10% bins to capture crisp hats without dilution.
-        if np.any(self.hat_mask):
-            hb2 = mag_raw[self.hat_mask]
-            if hb2.size > 12:
-                k2 = max(1, int(hb2.size * 0.10))
-                top2 = np.partition(hb2, hb2.size - k2)[hb2.size - k2 :]
-                hat_raw = float(np.mean(top2))
-            else:
-                hat_raw = float(np.mean(hb2))
-        else:
-            hat_raw = 0.0
-
         # Spectral centroid
         centroid = float(np.sum(self.freqs * mag) / np.sum(mag))
 
@@ -967,7 +882,6 @@ class FastAudioAnalyzer:
         self.ema_bass_raw = ema(self.ema_bass_raw, bass_raw_kick, 0.12)
         self.ema_kick_lo = ema(self.ema_kick_lo, kick_lo_raw, 0.10)
         self.ema_high = ema(self.ema_high, high_raw, 0.16)
-        self.ema_hat = ema(self.ema_hat, hat_raw, 0.18)
 
         # Bass energy in log domain (stabilizes across volume levels)
         bass_db = float(np.log(bass_raw_kick + 1e-12))
@@ -995,10 +909,9 @@ class FastAudioAnalyzer:
         bass_dev = bass - self.ema_bass
         flux_dev = flux - self.ema_flux
 
-        # Onset proxy:
-        # Autocorrelation BPM works best when the onset envelope has strong periodic structure.
-        # Pure spectral flux can be too noisy on EDM (hats) and too weak on heavy compression.
-        # Mix in the already-stabilized kick/high "strength" signals so beats are more consistent.
+        # Onset proxy: combine bass log-energy delta with (positive) spectral flux deviation.
+        # This is closer to the "onset envelope" people use for tempo tracking (e.g. librosa/aubio style),
+        # but still lightweight enough for real-time.
         onset = float(0.35 * max(0.0, db_diff) + 0.9 * max(0.0, flux_dev))
 
         # Track variance (very rough)
@@ -1038,37 +951,16 @@ class FastAudioAnalyzer:
         # Slightly more sensitive than low kick; high band often has smaller absolute energy.
         high_strength = float(clamp((high_z - 0.6) / 2.2, 0.0, 1.0))
 
-        # Hat-band strength (for hat sparkle group)
-        hat_dev = hat_raw - self.ema_hat
-        self.hat_var = ema(self.hat_var, hat_dev * hat_dev, 0.10)
-        hat_z = hat_dev / (math.sqrt(self.hat_var) + 1e-6)
-        hz0 = float(getattr(ShowOptions, "HAT_STRENGTH_Z0", 0.6))
-        hzr = float(getattr(ShowOptions, "HAT_STRENGTH_ZRANGE", 2.2))
-        hat_strength = float(clamp((hat_z - hz0) / max(1e-6, hzr), 0.0, 1.0))
-
         # Activity gate:
-        # In very quiet sections, the EMA/variance can get tiny, making z-scores jittery and causing false positives.
-        # We keep a minimum scaling for *visual* strengths so it doesn't feel dead,
-        # but we will still suppress onset (used for beat/BPM) by the raw activity value.
+        # In very quiet sections, the EMA/variance can get tiny, making z-scores jittery and causing "false kicks".
+        # Suppress strengths when overall loudness is near the noise floor.
         rms0 = float(getattr(ShowOptions, "ACTIVITY_RMS0", 0.0012))
         rmsr = float(getattr(ShowOptions, "ACTIVITY_RMS_RANGE", 0.010))
         activity = float(clamp((self.ema_rms - rms0) / max(1e-6, rmsr), 0.0, 1.0))
         min_scale = float(getattr(ShowOptions, "ACTIVITY_MIN_SCALE", 0.35))
         scale = float(min_scale + (1.0 - min_scale) * activity)
-        # Keep raw strengths for beat/BPM.
-        kick_strength_raw = float(kick_strength)
-        high_strength_raw = float(high_strength)
-        hat_strength_raw = float(hat_strength)
-        # Visual strengths include minimum scaling.
-        kick_strength_vis = float(kick_strength_raw) * float(scale)
-        high_strength_vis = float(high_strength_raw) * float(scale)
-        hat_strength_vis = float(hat_strength_raw) * float(scale)
-
-        # Final onset envelope for BPM/beat:
-        # - add rhythmic components (kick/high/hat) so BPM doesn't depend on flux alone
-        # - suppress it in quiet sections by the raw activity (so we don't hallucinate beats)
-        onset = float(onset + 0.70 * kick_strength_raw + 0.25 * high_strength_raw + 0.15 * hat_strength_raw)
-        onset = float(onset * activity)
+        kick_strength *= scale
+        high_strength *= scale
 
         kick = False
         cooldown = float(getattr(ShowOptions, "KICK_COOLDOWN_S", 0.09))
@@ -1076,7 +968,7 @@ class FastAudioAnalyzer:
             # Minimum activity gate (very low to work with quiet/system audio)
             if self.ema_rms > float(getattr(ShowOptions, "KICK_MIN_RMS", 0.0008)):
                 # Primary: kick-band pop above baseline (works well in EDM even with steady basslines)
-                kick_band_z = float(getattr(ShowOptions, "KICK_BAND_Z", 1.7))
+                kick_band_z = float(getattr(ShowOptions, "KICK_BAND_Z", 2.0))
                 sup_z = float(getattr(ShowOptions, "KICK_BAND_SUPPORT_Z", 0.2))
                 kickband_ok = (kick_lo_z > kick_band_z) and ((flux_z > sup_z) or (bass_db_z > sup_z))
 
@@ -1118,13 +1010,8 @@ class FastAudioAnalyzer:
             flux=self.ema_flux,
             flatness=self.ema_flatness,
             kick=kick,
-            kick_strength=kick_strength_vis,
-            high_strength=high_strength_vis,
-            hat_strength=hat_strength_vis,
-            kick_strength_raw=kick_strength_raw,
-            high_strength_raw=high_strength_raw,
-            hat_strength_raw=hat_strength_raw,
-            activity=float(activity),
+            kick_strength=kick_strength,
+            high_strength=high_strength,
             riser=riser,
             onset=onset,
         )
@@ -1212,20 +1099,6 @@ class EpicShow:
         self._high_release_rate = float(getattr(ShowOptions, "HIGH_RELEASE_RATE", 1.2))
         self._high_lp_rc = float(getattr(ShowOptions, "HIGH_LP_RC", 0.07))
 
-        # Hat-band envelope + filter (separate, very snappy)
-        self._hat_pulse = 0.0
-        self._hat_attack_rate = float(getattr(ShowOptions, "HAT_ATTACK_RATE", 10.0))
-        self._hat_release_rate = float(getattr(ShowOptions, "HAT_RELEASE_RATE", 3.0))
-        self._hat_lp_rc = float(getattr(ShowOptions, "HAT_LP_RC", 0.025))
-        self._hat_filt = FirstOrderFilter(0.0, rc=self._hat_lp_rc, dt=(1.0 / 50.0), initialized=False)
-
-        # "Show" moment state (buildup / drop / sparkles)
-        self._buildup_until = 0.0
-        self._drop_env = 0.0
-        self._last_riser = 0.0
-        # Per-channel white sparkle envelope (0..1)
-        self._sparkle: Dict[int, float] = {ch: 0.0 for ch in self.channel_ids}
-
         # Asymmetric envelope on kick strength (attack fast, release slower)
         self._kick_release_rate = 2.0  # units/sec (more momentum; less snappy)
         self._kick_gain = 2.0  # multiply kick signal before filtering (helps small flashes)
@@ -1251,7 +1124,6 @@ class EpicShow:
         # Per-group hue assignments (kept stable between kicks; updated on kicks/reshuffles/palette changes)
         self._kick_hues: Dict[int, float] = {}
         self._high_hues: Dict[int, float] = {}
-        self._hat_hues: Dict[int, float] = {}
 
         # Kick group selection (40% of lights for 2 kick beats, then reselect)
         self._kick_sel: set[int] = set()
@@ -1266,16 +1138,9 @@ class EpicShow:
         self._high_sel_frac = 0.40
         self._high_sel_hold_beats = int(getattr(ShowOptions, "GROUP_RESELECT_EVERY_BEATS", 8)) or 8
 
-        # Hat group selection (subset of remaining lights; shows hats/high-air)
-        self._hat_sel: set[int] = set()
-        self._hat_beat_count = 0
-        self._hat_sel_frac = float(getattr(ShowOptions, "HAT_SEL_FRAC", 0.35))
-        self._hat_sel_hold_beats = int(getattr(ShowOptions, "HAT_RESELECT_EVERY_BEATS", 8)) or 8
-
         # Now that palettes/indices exist, initialize groups (which assigns hues)
         self._select_kick_group(force=True)
         self._select_high_group(force=True)
-        self._select_hat_group(force=True)
 
         # Double-time detection: if kicks become ~2x faster than recent, reshuffle immediately.
         self._kick_iv_hist: List[float] = []
@@ -1311,71 +1176,6 @@ class EpicShow:
         # Structural events (palette advance, group reshuffle, etc.) should *never* be driven by chattery kicks.
         # Use the tempo grid beat when available; otherwise fall back to kick.
         struct_evt = bool(getattr(f, "beat", False)) if (use_grid and beat_active) else bool(getattr(f, "kick", False))
-
-        # ---------------------------------------------------------------------
-        # Extra "show" events: buildup + drop + white sparkles (iLightShow-ish)
-        # ---------------------------------------------------------------------
-        riser = float(getattr(f, "riser", 0.0) or 0.0)
-        onset_rate = float(getattr(f, "onset_rate", 0.0) or 0.0)
-        dbl = bool(getattr(f, "double_burst", False))
-
-        # Buildup mode: riser / rapid-onset / double-burst
-        if bool(getattr(ShowOptions, "ENABLE_BUILDUP_EFFECTS", True)):
-            thr = float(getattr(ShowOptions, "BUILDUP_RISER_THR", 0.55))
-            hold = float(getattr(ShowOptions, "BUILDUP_HOLD_S", 1.4))
-            # Only trust density-based buildup triggers when tempo is actually active/locked.
-            if (riser >= thr) or (dbl and beat_active) or ((onset_rate >= 11.0) and beat_active):
-                self._buildup_until = max(self._buildup_until, float(now_s) + hold + 1.0 * riser)
-        buildup = bool(float(now_s) < float(self._buildup_until))
-
-        # Drop detection: riser was high and then falls quickly -> flash + palette jump
-        if bool(getattr(ShowOptions, "ENABLE_DROP_FLASH", True)):
-            if bool(getattr(ShowOptions, "DROP_MIN_BEAT_ACTIVE", True)) and (not beat_active):
-                # Don't fire drop flashes when beat isn't locked (feels random).
-                pass
-            else:
-                peak_thr = float(getattr(ShowOptions, "DROP_RISER_PEAK_THR", 0.72))
-                fall_thr = float(getattr(ShowOptions, "DROP_RISER_FALL_THR", 0.33))
-                if (self._last_riser >= peak_thr) and (riser <= fall_thr) and beat_evt:
-                    self._drop_env = 1.0
-                    if bool(getattr(ShowOptions, "DROP_PALETTE_JUMP", True)) and ShowOptions.ENABLE_PALETTES:
-                        # jump palette for a "drop hit" feel
-                        self._palette_idx = (self._palette_idx + 1 + self._rng.randrange(3)) % len(self._palettes)
-                        self._update_group_hues()
-
-        # Decay drop flash envelope (white mix applied in render loop)
-        if self._drop_env > 1e-4:
-            ddec = float(getattr(ShowOptions, "DROP_FLASH_DECAY_S", 0.25))
-            self._drop_env *= float(math.exp(-float(dt) / max(1e-6, ddec)))
-        else:
-            self._drop_env = 0.0
-
-        # White sparkles during buildup (random lights flash white briefly)
-        if bool(getattr(ShowOptions, "ENABLE_WHITE_SPARKLES", True)):
-            # decay existing sparkles
-            sdec = float(getattr(ShowOptions, "BUILDUP_SPARKLE_DECAY_S", 0.12))
-            if sdec > 0:
-                kdec = float(math.exp(-float(dt) / max(1e-6, sdec)))
-                for ch in self._sparkle:
-                    self._sparkle[ch] *= kdec
-            else:
-                for ch in self._sparkle:
-                    self._sparkle[ch] = 0.0
-
-            if buildup and (self.n > 0):
-                base_rate = float(getattr(ShowOptions, "BUILDUP_SPARKLES_PER_S", 7.0))
-                # more riser + more onset density -> more sparkles
-                rate = base_rate * (0.35 + 1.6 * riser + 0.10 * min(20.0, onset_rate))
-                # dt-based Poisson-ish spawn; cap probability for stability
-                p = float(clamp(rate * float(dt), 0.0, 0.85))
-                if self._rng.random() < p:
-                    # Prefer non-kick-group lights so the kick group stays readable
-                    pool = [ch for ch in self.channel_ids if ch not in self._kick_sel] or list(self.channel_ids)
-                    ch = int(self._rng.choice(pool))
-                    self._sparkle[ch] = max(self._sparkle.get(ch, 0.0), 1.0)
-
-        # Track last riser for drop detection
-        self._last_riser = float(riser)
 
         # Flash envelope from kick band strength (asymmetric: fast up, slower down)
         if ShowOptions.ENABLE_KICKS:
@@ -1418,10 +1218,6 @@ class EpicShow:
             self._high_beat_count += 1
             if (self._high_beat_count - 1) % max(1, int(self._high_sel_hold_beats)) == 0:
                 self._select_high_group(force=True)
-
-            self._hat_beat_count += 1
-            if (self._hat_beat_count - 1) % max(1, int(self._hat_sel_hold_beats)) == 0:
-                self._select_hat_group(force=True)
 
             # (Palette/color changes moved below to a slower beat cadence to reduce flashiness.)
 
@@ -1486,19 +1282,14 @@ class EpicShow:
                 self.drop_flash = max(self.drop_flash, 0.9)
 
         # Riser drives hue spin + brightness ramp
-        # Hue drift gives motion even when music is steady; during buildup, drift speeds up.
-        if bool(getattr(ShowOptions, "ENABLE_HUE_DRIFT", True)):
-            drift = float(getattr(ShowOptions, "DRIFT_RATE", 0.06))
-            boost = float(getattr(ShowOptions, "BUILDUP_DRIFT_BOOST", 2.6)) if buildup else 1.0
-            self.h_spin = (self.h_spin + float(dt) * float(drift) * float(boost)) % 1.0
-        else:
-            self.h_spin = (self.h_spin + dt * (0.10 + 0.8 * riser)) % 1.0
+        self.h_spin = (self.h_spin + dt * (0.15 + 1.2 * f.riser)) % 1.0
 
         # Decays
         self.strobe = max(0.0, self.strobe - dt * (8.0 if self.mode == "drop" else 5.0))
         self.drop_flash = max(0.0, self.drop_flash - dt * 4.5)
         self.beat_flash = max(0.0, self.beat_flash - dt * 8.5)
         # (beat_pulse handled by asymmetric envelope above)
+        self._hat_pulse = 0.0
         self._mel_pulse = 0.0
 
         # Trigger + run beat brightness animation
@@ -1594,88 +1385,31 @@ class EpicShow:
         self._high_filt.update_alpha(max(1e-4, float(self._high_lp_rc)))
         high_lp = float(self._high_filt.update(self._high_pulse))
 
-        # Hat envelope (very high transients)
-        hat_raw = float(getattr(f, "hat_strength", 0.0)) if bool(getattr(ShowOptions, "ENABLE_HATS", True)) else 0.0
-        if hat_raw >= self._hat_pulse:
-            rise = float(dt) * float(self._hat_attack_rate)
-            self._hat_pulse = min(float(hat_raw), float(self._hat_pulse) + rise)
-        else:
-            self._hat_pulse = max(0.0, float(self._hat_pulse) - float(dt) * float(self._hat_release_rate))
-
-        self._hat_filt.dt = float(dt)
-        self._hat_filt.update_alpha(max(1e-4, float(self._hat_lp_rc)))
-        hat_lp = float(self._hat_filt.update(self._hat_pulse))
-
         for ch in self.channel_ids:
             in_kick_group = (ch in self._kick_sel)
             if in_kick_group and ShowOptions.ENABLE_KICKS:
                 h = float(self._kick_hues.get(ch, pal_hues[0] if pal_hues else 0.10)) if ShowOptions.ENABLE_PALETTES else 0.10
-                # slight hue motion so it doesn't feel static between palette changes
-                if bool(getattr(ShowOptions, "ENABLE_HUE_DRIFT", True)):
-                    h = (h + 0.06 * float(self.h_spin)) % 1.0
                 r, g, b = hsv_to_rgb(h, s, v_flash)
-                # White mixing (sparkles / drop)
-                w = 0.0
-                if self._drop_env > 0.0 and bool(getattr(ShowOptions, "ENABLE_DROP_FLASH", True)):
-                    w = max(w, float(getattr(ShowOptions, "DROP_WHITE", 0.85)) * float(self._drop_env))
-                if buildup and bool(getattr(ShowOptions, "ENABLE_WHITE_SPARKLES", True)):
-                    w = max(w, float(getattr(ShowOptions, "BUILDUP_WHITE_MAX", 0.95)) * float(self._sparkle.get(ch, 0.0)))
-                if w > 1e-4:
-                    w = float(clamp(w, 0.0, 1.0))
-                    ww = float(v_flash)
-                    r = (1.0 - w) * float(r) + w * ww
-                    g = (1.0 - w) * float(g) + w * ww
-                    b = (1.0 - w) * float(b) + w * ww
                 out[ch] = rgb_to_u16(r, g, b, gamma=True)
             else:
                 if not ShowOptions.ENABLE_BACKGROUND and (not ShowOptions.ENABLE_HIGH):
                     out[ch] = (0, 0, 0)
                 else:
                     in_high = (ch in self._high_sel)
-                    in_hat = (ch in self._hat_sel)
                     # Other lights: respond to kick click + hats with brighter/snappier colors.
                     h_high = float(self._high_hues.get(ch, pal_hues[2] if len(pal_hues) > 2 else (pal_hues[0] if pal_hues else 0.62))) if ShowOptions.ENABLE_PALETTES else 0.62
-                    h_hat = float(self._hat_hues.get(ch, pal_hues[1] if len(pal_hues) > 1 else (pal_hues[0] if pal_hues else 0.12))) if ShowOptions.ENABLE_PALETTES else 0.12
 
                     v_pulse = (0.55 * float(getattr(ShowOptions, "HIGH_GAIN", 1.0)) * high_lp) if (in_high and ShowOptions.ENABLE_HIGH) else 0.0
                     v_other = clamp(v_base + v_pulse, 0.0, 1.0)
-                    if in_hat:
-                        v_other = clamp(v_other + (0.38 * float(getattr(ShowOptions, "HAT_GAIN", 2.2)) * hat_lp), 0.0, 1.0)
                     if ShowOptions.ENABLE_BACKGROUND:
                         v_other = max(v_other, v_base * 0.9)
                     else:
                         v_other = max(v_other, 0.0)
 
-                    # During buildup, spin hues faster on high group for that "riser rainbow" feel.
                     h2 = h_high
-                    if bool(getattr(ShowOptions, "ENABLE_HUE_DRIFT", True)):
-                        spin = float(self.h_spin)
-                        if buildup and in_high:
-                            h2 = (h2 + 0.22 * spin + 0.10 * float(getattr(f, "beat_phase", 0.0))) % 1.0
-                        else:
-                            h2 = (h2 + 0.08 * spin) % 1.0
-                    if in_hat:
-                        # Hat group anchors to its own hue and stays crisp.
-                        h2 = (h_hat + 0.06 * float(self.h_spin)) % 1.0
                     s_boost = (0.30 + 0.60 * min(1.0, float(getattr(ShowOptions, "HIGH_GAIN", 1.0)) * high_lp)) if in_high else 0.20
-                    if in_hat:
-                        s_boost = max(s_boost, 0.55 + 0.25 * min(1.0, float(getattr(ShowOptions, "HAT_GAIN", 2.2)) * hat_lp))
                     s2 = clamp(s * s_boost, 0.0, 1.0)
                     r2, g2, b2 = hsv_to_rgb(h2, s2, v_other)
-                    # White mixing for non-kick lights too (sparkles / drop)
-                    w2 = 0.0
-                    if self._drop_env > 0.0 and bool(getattr(ShowOptions, "ENABLE_DROP_FLASH", True)):
-                        w2 = max(w2, float(getattr(ShowOptions, "DROP_WHITE", 0.85)) * float(self._drop_env))
-                    if buildup and bool(getattr(ShowOptions, "ENABLE_WHITE_SPARKLES", True)):
-                        w2 = max(w2, float(getattr(ShowOptions, "BUILDUP_WHITE_MAX", 0.95)) * float(self._sparkle.get(ch, 0.0)))
-                    if in_hat:
-                        w2 = max(w2, float(getattr(ShowOptions, "HAT_WHITE_TICK", 0.12)) * float(hat_lp))
-                    if w2 > 1e-4:
-                        w2 = float(clamp(w2, 0.0, 1.0))
-                        ww2 = float(v_other)
-                        r2 = (1.0 - w2) * float(r2) + w2 * ww2
-                        g2 = (1.0 - w2) * float(g2) + w2 * ww2
-                        b2 = (1.0 - w2) * float(b2) + w2 * ww2
                     out[ch] = rgb_to_u16(r2, g2, b2, gamma=True)
 
         return out
@@ -1753,7 +1487,6 @@ class EpicShow:
 
         self._kick_hues = assign(sorted(self._kick_sel), seed=1000 + self._palette_idx * 97 + self._color_idx * 7 + self._kick_beat_count * 3)
         self._high_hues = assign(sorted(self._high_sel), seed=2000 + self._palette_idx * 97 + self._color_idx * 11 + self._high_beat_count * 3)
-        self._hat_hues = assign(sorted(self._hat_sel), seed=3000 + self._palette_idx * 97 + self._color_idx * 13 + self._hat_beat_count * 3)
 
     def _select_kick_group(self, force: bool = False) -> None:
         if self.n <= 0:
@@ -1783,21 +1516,6 @@ class EpicShow:
         k = max(1, int(round(len(pool) * float(self._high_sel_frac))))
         k = min(len(pool), k)
         self._high_sel = set(self._rng.sample(pool, k))
-        self._update_group_hues()
-
-    def _select_hat_group(self, force: bool = False) -> None:
-        if self.n <= 0:
-            self._hat_sel = set()
-            return
-        if (not force) and self._hat_sel:
-            return
-        # Prefer choosing from non-kick and non-high lights so roles don't overlap.
-        pool = [ch for ch in self.channel_ids if (ch not in self._kick_sel) and (ch not in self._high_sel)]
-        if not pool:
-            pool = [ch for ch in self.channel_ids if ch not in self._kick_sel] or list(self.channel_ids)
-        k = max(1, int(round(len(pool) * float(self._hat_sel_frac))))
-        k = min(len(pool), k)
-        self._hat_sel = set(self._rng.sample(pool, k))
         self._update_group_hues()
 
     def _reshuffle_groups(self, force: bool = False) -> None:
@@ -1936,8 +1654,6 @@ class PreviewWindow:
         self._kick_hi = 130.0
         self._high_lo = 1200.0
         self._high_hi = 12000.0
-        self._hat_lo = 8000.0
-        self._hat_hi = 16000.0
         # Debug signals (for visualizing analyzer/beat internals)
         self._dbg_onset = 0.0
         self._dbg_onset_env = 0.0
@@ -1949,9 +1665,6 @@ class PreviewWindow:
         self._dbg_bpm_conf = 0.0
         self._dbg_beat_active = False
         self._dbg_beat_phase = 0.0
-        self._dbg_onset_src = "mix"
-        self._dbg_buildup = False
-        self._dbg_drop = 0.0
         self._dbg_bass_dz = 0.0
         self._dbg_bass_db_z = 0.0
         self._dbg_db_diff = 0.0
@@ -1995,24 +1708,22 @@ class PreviewWindow:
                 self._frame_rgb8[ch] = (r8, g8, b8)
                 self._frame_v[ch] = float(max(r8, g8, b8) / 255.0)
 
-    def update_roles(self, kick_group: set[int], high_group: set[int], hat_group: Optional[set[int]] = None) -> None:
+    def update_roles(self, kick_group: set[int], high_group: set[int]) -> None:
         """
         Provide the current per-channel group membership (from the show engine).
         """
         with self._lock:
-            hat_group = hat_group or set()
             for ch in self.channel_ids:
                 in_k = ch in kick_group
                 in_h = ch in high_group
-                in_t = ch in hat_group
-                parts = []
-                if in_k:
-                    parts.append("K")
-                if in_h:
-                    parts.append("H")
-                if in_t:
-                    parts.append("T")
-                self._role_by_ch[ch] = "+".join(parts)
+                if in_k and in_h:
+                    self._role_by_ch[ch] = "K+H"
+                elif in_k:
+                    self._role_by_ch[ch] = "K"
+                elif in_h:
+                    self._role_by_ch[ch] = "H"
+                else:
+                    self._role_by_ch[ch] = ""
 
     def update_spectrum(
         self,
@@ -2022,8 +1733,6 @@ class PreviewWindow:
         kick_hi: float,
         high_lo: float,
         high_hi: float,
-        hat_lo: float,
-        hat_hi: float,
         onset: float,
         onset_env: float,
         onset_thr: float,
@@ -2034,9 +1743,6 @@ class PreviewWindow:
         bpm_conf: float,
         beat_active: bool,
         beat_phase: float,
-        onset_src: str,
-        buildup: bool,
-        drop_env: float,
         bass_dz: float,
         bass_db_z: float,
         db_diff: float,
@@ -2050,8 +1756,6 @@ class PreviewWindow:
             self._kick_hi = float(kick_hi)
             self._high_lo = float(high_lo)
             self._high_hi = float(high_hi)
-            self._hat_lo = float(hat_lo)
-            self._hat_hi = float(hat_hi)
             self._dbg_onset = float(onset)
             self._dbg_onset_env = float(onset_env)
             self._dbg_onset_thr = float(onset_thr)
@@ -2062,9 +1766,6 @@ class PreviewWindow:
             self._dbg_bpm_conf = float(bpm_conf)
             self._dbg_beat_active = bool(beat_active)
             self._dbg_beat_phase = float(beat_phase)
-            self._dbg_onset_src = str(onset_src or "")
-            self._dbg_buildup = bool(buildup)
-            self._dbg_drop = float(drop_env)
             self._dbg_bass_dz = float(bass_dz)
             self._dbg_bass_db_z = float(bass_db_z)
             self._dbg_db_diff = float(db_diff)
@@ -2113,7 +1814,6 @@ class PreviewWindow:
                 mag = None if self._spec_mag is None else self._spec_mag.copy()
                 klo, khi = self._kick_lo, self._kick_hi
                 hlo, hhi = self._high_lo, self._high_hi
-                tlo, thi = self._hat_lo, self._hat_hi
                 dbg_onset = float(self._dbg_onset)
                 dbg_onset_env = float(self._dbg_onset_env)
                 dbg_onset_thr = float(self._dbg_onset_thr)
@@ -2124,9 +1824,6 @@ class PreviewWindow:
                 dbg_bpm_conf = float(self._dbg_bpm_conf)
                 dbg_beat_active = bool(self._dbg_beat_active)
                 dbg_beat_phase = float(self._dbg_beat_phase)
-                dbg_onset_src = str(getattr(self, "_dbg_onset_src", ""))
-                dbg_buildup = bool(getattr(self, "_dbg_buildup", False))
-                dbg_drop = float(getattr(self, "_dbg_drop", 0.0))
                 dbg_bass_dz = float(self._dbg_bass_dz)
                 dbg_bass_db_z = float(self._dbg_bass_db_z)
                 dbg_db_diff = float(self._dbg_db_diff)
@@ -2205,13 +1902,11 @@ class PreviewWindow:
                     draw_box(0, "B", dbg_beat, (245, 245, 245))
                     draw_box(1, "O", dbg_onset_evt, (245, 245, 245))
                     draw_box(2, "K", dbg_kick, (220, 220, 70))
-                    draw_box(3, "U", dbg_buildup, (255, 255, 255))  # bUildup
-                    draw_box(4, "D", dbg_drop > 0.10, (255, 255, 255))  # Drop
 
                     # Onset meters (raw + env) with threshold marker
                     meter_w = 220
                     meter_h = 18
-                    mx = bx0 + 5 * (box + gap) + 18
+                    mx = bx0 + 3 * (box + gap) + 26
                     my = by0
                     pygame.draw.rect(screen, (40, 40, 50), pygame.Rect(mx, my, meter_w, meter_h), 1)
                     raw_n = clamp(dbg_onset / 3.0, 0.0, 1.0)
@@ -2224,7 +1919,7 @@ class PreviewWindow:
 
                     # Text blocks (no overlap with spectrum now)
                     # Fixed-width formatting so the debug strip doesn't "jitter" as numbers change magnitude/sign.
-                    line1 = f"onset[{dbg_onset_src or '?'}] o={dbg_onset:5.2f} env={dbg_onset_env:5.2f} thr={dbg_onset_thr:5.2f}  drop={dbg_drop:4.2f}"
+                    line1 = f"onset o={dbg_onset:5.2f} env={dbg_onset_env:5.2f} thr={dbg_onset_thr:5.2f}"
                     line2 = (
                         f"tempo bpm={dbg_bpm:6.0f} conf={dbg_bpm_conf:4.2f} active={int(dbg_beat_active):1d} phase={dbg_beat_phase:4.2f}   "
                         f"dz={dbg_bass_dz:+6.2f} dbz={dbg_bass_db_z:+6.2f} dd={dbg_db_diff:+7.3f}   "
@@ -2296,10 +1991,6 @@ class PreviewWindow:
                         for fx in (hlo, hhi):
                             x = _x_for(fx)
                             pygame.draw.line(screen, (80, 200, 255), (x, y0 + y_top), (x, y0 + self.spectrum_h - y_bottom), 2)
-                        # Hat band (light gray)
-                        for fx in (tlo, thi):
-                            x = _x_for(fx)
-                            pygame.draw.line(screen, (210, 210, 210), (x, y0 + y_top), (x, y0 + self.spectrum_h - y_bottom), 1)
 
                         if font:
                             # Labels
@@ -2400,22 +2091,10 @@ class Runner:
         self._bpm = 0.0
         self._bpm_conf = 0.0
         self._bpm_last_compute = 0.0
-        # Multi-source onset buffers: different music emphasizes different bands.
-        # We'll estimate BPM on multiple onset candidates and pick the one that is most periodic.
-        self._onset_sources = ["mix", "kick", "high", "hat", "flux"]
-        self._onset_buf_by: Dict[str, np.ndarray] = {
-            k: np.zeros(int(self.update_hz * 16.0), dtype=np.float32) for k in self._onset_sources
-        }
+        self._onset_buf = np.zeros(int(self.update_hz * 16.0), dtype=np.float32)  # 16s window for stability
         self._onset_w = 0
         self._onset_filled = False
-        self._onset_env_by: Dict[str, float] = {k: 0.0 for k in self._onset_sources}
-        self._onset_src = "mix"
-        # Per-source onset stats for event thresholding (phase lock + onset_rate)
-        self._onset_mu_by: Dict[str, float] = {k: 0.0 for k in self._onset_sources}
-        self._onset_var_by: Dict[str, float] = {k: 1e-6 for k in self._onset_sources}
-        self._last_onset_evt_t_by: Dict[str, float] = {k: 0.0 for k in self._onset_sources}
-        # Smoothed RMS gate for tempo logic (prevents silence from "finding a tempo")
-        self._rms_env = 0.0
+        self._onset_env = 0.0
 
         # Beat grid (tempo-locked patterns)
         self._beat_period = 0.0
@@ -2440,8 +2119,6 @@ class Runner:
         # Show-tuned bands (used for kick/high strength + spectrum markers)
         self.analyzer.set_kick_band(float(ShowOptions.KICK_BAND[0]), float(ShowOptions.KICK_BAND[1]))
         self.analyzer.set_high_band(float(ShowOptions.HIGH_BAND[0]), float(ShowOptions.HIGH_BAND[1]))
-        if hasattr(self.analyzer, "set_hat_band") and hasattr(ShowOptions, "HAT_BAND"):
-            self.analyzer.set_hat_band(float(ShowOptions.HAT_BAND[0]), float(ShowOptions.HAT_BAND[1]))
         self.show = EpicShow(self.channel_ids)
 
         # Optional preview window (single combined window: tiles + spectrum)
@@ -3023,61 +2700,19 @@ class Runner:
 
             # Analyze
             f = self.analyzer.analyze(x, now_s=self._now())
-            # Smoothed RMS for gating (more stable than instantaneous)
-            self._rms_env = 0.95 * float(self._rms_env) + 0.05 * float(f.rms)
 
-            # Multi-source onset envelopes for BPM estimation:
-            # - "mix"  : analyzer's combined onset
-            # - "kick" : kick strength
-            # - "high" : high-band strength
-            # - "hat"  : hat strength
-            # - "flux" : positive spectral flux deviation (scaled)
-            flux_dev = float(max(0.0, float(getattr(self.analyzer, "dbg_flux_dev", 0.0))))
-            flux_gain = float(getattr(ShowOptions, "ONSET_FLUX_GAIN", 6.0))
-            act = float(getattr(f, "activity", 0.0) or 0.0)
-            # Use RAW strengths for BPM sources (visual strengths have a minimum scale, which is noisy in quiet sections).
-            onset_raw_by = {
-                "mix": float(getattr(f, "onset", 0.0)),
-                "kick": float(getattr(f, "kick_strength_raw", 0.0)) * act,
-                "high": float(getattr(f, "high_strength_raw", 0.0)) * act,
-                "hat": float(getattr(f, "hat_strength_raw", 0.0)) * act,
-                "flux": float(clamp(flux_gain * flux_dev, 0.0, 3.0)) * act,
-            }
-            # Smooth each envelope before storing (reduces jitter)
-            # If audio is quiet, aggressively decay envelopes toward 0 so autocorr can't lock onto noise.
-            stats_min_rms = float(getattr(ShowOptions, "BEAT_STATS_MIN_RMS", 0.0010))
-            audio_ok = bool(self._rms_env >= stats_min_rms)
-            for k, raw in onset_raw_by.items():
-                prev = float(self._onset_env_by.get(k, 0.0))
-                env = 0.90 * prev + 0.10 * (float(raw) if audio_ok else 0.0)
-                self._onset_env_by[k] = env
-                self._onset_buf_by[k][self._onset_w] = float(env)
-
-            self._onset_w = (self._onset_w + 1) % next(iter(self._onset_buf_by.values())).size
+            # BPM estimation from onset envelope (robust to missed kicks)
+            # Smooth the onset envelope before storing (reduces jitter in bpm_est)
+            self._onset_env = 0.85 * float(self._onset_env) + 0.15 * float(f.onset)
+            self._onset_buf[self._onset_w] = float(self._onset_env)
+            self._onset_w = (self._onset_w + 1) % self._onset_buf.size
             if self._onset_w == 0:
                 self._onset_filled = True
 
             now_wall = time.perf_counter()
-            if (now_wall - self._bpm_last_compute) > 0.5 and (self._onset_filled or self._onset_w > int(self.update_hz * 4.0)) and audio_ok:
+            if (now_wall - self._bpm_last_compute) > 0.5 and (self._onset_filled or self._onset_w > int(self.update_hz * 4.0)):
                 self._bpm_last_compute = now_wall
-                # Pick the most periodic onset source
-                best = (0.0, 0.0, self._onset_src)  # (bpm, conf, src)
-                cur_src = str(self._onset_src)
-                cur_best = (0.0, 0.0, cur_src)
-                for src in self._onset_sources:
-                    bpm_i, conf_i = self._estimate_bpm(src)
-                    if src == cur_src:
-                        cur_best = (bpm_i, conf_i, src)
-                    if conf_i > best[1]:
-                        best = (bpm_i, conf_i, src)
-
-                bpm, conf, src = best
-                # Hysteresis: don't switch sources unless clearly better (reduces flicker)
-                if cur_best[1] > 0.0 and src != cur_src:
-                    if conf < (cur_best[1] * 1.12 + 0.08):
-                        bpm, conf, src = cur_best
-
-                self._onset_src = str(src)
+                bpm, conf = self._estimate_bpm()
                 if bpm > 0:
                     # Confidence gate + tempo lock:
                     # - If confidence is low, keep current bpm (avoid bouncing)
@@ -3097,41 +2732,9 @@ class Runner:
             beat = False
             beat_phase = 0.0
             # Onset event threshold (also shown in pygame debug UI)
-            # Use adaptive mean+std instead of env*constant (more robust across songs and volume levels).
-            src = str(self._onset_src)
-            o = float(self._onset_env_by.get(src, float(getattr(f, "onset", 0.0))))
-            mu_a = 0.02  # slow stats, ~1s time constant at 50Hz
-            beat_min_rms = float(getattr(ShowOptions, "BEAT_MIN_RMS", 0.0012))
-            stats_min_rms = float(getattr(ShowOptions, "BEAT_STATS_MIN_RMS", 0.0010))
-            # Prevent quiet sections from collapsing variance (which makes thresholds too low and causes false beats).
-            if float(f.rms) >= stats_min_rms:
-                mu0 = float(self._onset_mu_by.get(src, 0.0))
-                var0 = float(self._onset_var_by.get(src, 1e-6))
-                dev = o - mu0
-                mu1 = (1.0 - mu_a) * mu0 + mu_a * o
-                var1 = (1.0 - mu_a) * var0 + mu_a * (dev * dev)
-                self._onset_mu_by[src] = float(mu1)
-                self._onset_var_by[src] = float(var1)
-            std = float(math.sqrt(max(1e-9, float(self._onset_var_by.get(src, 1e-6)))))
-            k = float(getattr(ShowOptions, "ONSET_EVT_STD_K", 2.2))
-            onset_thr = max(float(getattr(ShowOptions, "ONSET_EVT_FLOOR", 0.010)), float(self._onset_mu_by.get(src, 0.0)) + k * std)
-
-            # Refractory prevents counting hats as multiple "events" in the same transient.
-            ref = float(getattr(ShowOptions, "ONSET_EVT_REFRACTORY_S", 0.085))
-            # Gate onset events in quiet sections to avoid hallucinated beat locks.
-            last_evt = float(self._last_onset_evt_t_by.get(src, 0.0))
-            is_onset_evt = (float(f.rms) >= beat_min_rms) and (o > onset_thr) and ((now_s - last_evt) >= ref)
-            if is_onset_evt:
-                self._last_onset_evt_t_by[src] = float(now_s)
-
-            beat_conf_min = float(getattr(ShowOptions, "BEAT_CONF_MIN", 1.55))
-            beat_min_rms_gate = float(getattr(ShowOptions, "BEAT_MIN_RMS", 0.0012))
-            beat_active = bool(
-                (self._rms_env >= beat_min_rms_gate)
-                and (self._bpm > 50.0)
-                and (self._bpm < 210.0)
-                and (self._bpm_conf >= beat_conf_min)
-            )
+            onset_thr = max(0.012, float(self._onset_env) * 1.8)
+            is_onset_evt = float(f.onset) > onset_thr
+            beat_active = bool(self._bpm > 50.0 and self._bpm < 210.0 and self._bpm_conf >= 1.7)
             if beat_active:
                 period = 60.0 / max(1e-6, self._bpm)
                 # initialize / retune gently
@@ -3215,10 +2818,8 @@ class Runner:
                             float(ShowOptions.KICK_BAND[1]),
                             float(self.analyzer.high_lo_hz),
                             float(self.analyzer.high_hi_hz),
-                            float(getattr(self.analyzer, "hat_lo_hz", 8000.0)),
-                            float(getattr(self.analyzer, "hat_hi_hz", 16000.0)),
-                            float(o),
-                            float(self._onset_env_by.get(str(self._onset_src), 0.0)),
+                            float(f.onset),
+                            float(self._onset_env),
                             float(onset_thr),
                             bool(is_onset_evt),
                             bool(f.beat),
@@ -3227,9 +2828,6 @@ class Runner:
                             float(self._bpm_conf),
                             bool(beat_active),
                             float(f.beat_phase),
-                            str(self._onset_src),
-                            bool(now_s < float(getattr(self.show, "_buildup_until", 0.0))),
-                            float(getattr(self.show, "_drop_env", 0.0) or 0.0),
                             float(getattr(self.analyzer, "dbg_bass_dz", 0.0)),
                             float(getattr(self.analyzer, "dbg_bass_db_z", 0.0)),
                             float(getattr(self.analyzer, "dbg_db_diff", 0.0)),
@@ -3312,28 +2910,23 @@ class Runner:
                     try:
                         kick_sel = set(getattr(self.show, "_kick_sel", set()) or set())
                         high_sel = set(getattr(self.show, "_high_sel", set()) or set())
-                        hat_sel = set(getattr(self.show, "_hat_sel", set()) or set())
-                        self._preview.update_roles(kick_sel, high_sel, hat_sel)
+                        self._preview.update_roles(kick_sel, high_sel)
                     except Exception:
                         pass
             except Exception:
                 # If DTLS hiccups, don't hard-crash the show loop; you can restart.
                 pass
 
-    def _estimate_bpm(self, onset_src: str) -> Tuple[float, float]:
+    def _estimate_bpm(self) -> Tuple[float, float]:
         """
         Estimate BPM from onset envelope via autocorrelation (tempogram-ish).
         Returns (bpm, confidence).
         """
-        src = str(onset_src or "mix")
-        if src not in self._onset_buf_by:
-            src = "mix"
         # Reconstruct onset history in time order
-        buf = self._onset_buf_by[src]
         if self._onset_filled:
-            x = np.concatenate([buf[self._onset_w :], buf[: self._onset_w]])
+            x = np.concatenate([self._onset_buf[self._onset_w :], self._onset_buf[: self._onset_w]])
         else:
-            x = buf[: self._onset_w]
+            x = self._onset_buf[: self._onset_w]
         if x.size < int(self.update_hz * 3.0):
             return 0.0, 0.0
 
